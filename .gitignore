@@ -1,0 +1,22 @@
+# Python environment
+venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+
+# Input videos
+videos/*
+!videos/.gitkeep
+
+# Uploaded videos
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Generated evidence and reports
+outputs/*
+!outputs/.gitkeep
+
+# Temporary model runs
+runs/
