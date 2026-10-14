@@ -57,43 +57,7 @@ The system is designed as an **investigative aid**. Automated detections indicat
 
 The system follows a video-processing pipeline:
 
-```text
-          CCTV Video Upload
-                  |
-                  v
-       Video Input and Validation
-                  |
-                  v
-          Frame Extraction
-                  |
-                  v
-       YOLO11n Person Detection
-                  |
-                  v
-       ByteTrack Object Tracking
-                  |
-                  v
-       Restricted Area (ROI) Check
-                  |
-                  v
-          Event Detection
-                  |
-                  v
-       Evidence Collection
-          /      |       \
-         v       v        v
-      Snapshot  Video    Event Log
-                Clip
-          \      |       /
-                  v
-        Report and Metadata
-                  |
-                  v
-       Streamlit Forensic Dashboard
-                  |
-                  v
-          Evidence Export
-```
+![CCTV System Architecture](docs/system-architecture.png)
 
 ### Main Components
 
