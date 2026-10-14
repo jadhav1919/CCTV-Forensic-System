@@ -2,13 +2,16 @@ import base64
 import csv
 import hashlib
 import io
+import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
 from datetime import datetime
+from pathlib import Path
 
-import altair as alt
+import cv2
 import pandas as pd
 import streamlit as st
 
@@ -23,9 +26,10 @@ EVENTS_FILE = os.path.join(BASE_DIR, "data", "events.csv")
 SNAPSHOT_FOLDER = os.path.join(BASE_DIR, "outputs", "snapshots")
 EVENTS_FOLDER = os.path.join(BASE_DIR, "outputs", "events")
 SUMMARY_FOLDER = os.path.join(BASE_DIR, "outputs", "summaries")
+METADATA_FILE = os.path.join(SUMMARY_FOLDER, "metadata.json")
+SUMMARY_HTML = os.path.join(SUMMARY_FOLDER, "summary.html")
 PROCESS_SCRIPT = os.path.join(BASE_DIR, "src", "process_video.py")
 
-# Prefer browser-compatible H.264 video.
 SUMMARY_VIDEO_BROWSER = os.path.join(
     SUMMARY_FOLDER, "Forensic_Annotated_Summary_browser.mp4"
 )
@@ -79,17 +83,23 @@ st.markdown(
         padding-bottom: 3rem;
         max-width: 1500px;
     }}
+
+    /* -------- SIDEBAR (scoped, no leaks) -------- */
     section[data-testid="stSidebar"] {{
         background: linear-gradient(180deg, {NAVY} 0%, {NAVY_2} 100%);
     }}
-    section[data-testid="stSidebar"] * {{ color: #E2E8F0; }}
-    section[data-testid="stSidebar"] hr {{
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] * {{
+        color: #E2E8F0;
+    }}
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] hr {{
         border-color: rgba(255,255,255,0.12);
     }}
-    section[data-testid="stSidebar"] .stCaption,
-    section[data-testid="stSidebar"] small {{
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] .stCaption,
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] small {{
         color: #94A3B8 !important;
     }}
+
+    /* -------- BRAND -------- */
     .brand {{
         display: flex;
         align-items: center;
@@ -123,6 +133,8 @@ st.markdown(
         font-weight: 600;
         color: #FFFFFF;
     }}
+
+    /* -------- TOP BAR -------- */
     .topbar {{
         background: #FFFFFF;
         border: 1px solid {LINE};
@@ -152,6 +164,8 @@ st.markdown(
         color: {MUTED};
     }}
     .topbar .meta b {{ color: {INK}; }}
+
+    /* -------- PILLS -------- */
     .pill {{
         display: inline-block;
         padding: 3px 11px;
@@ -164,6 +178,8 @@ st.markdown(
     .pill-red {{ background: #FEE2E2; color: {RED}; }}
     .pill-blue {{ background: {BLUE_SOFT}; color: {BLUE}; }}
     .pill-grey {{ background: #E2E8F0; color: #334155; }}
+
+    /* -------- KPI CARDS -------- */
     .kpi {{
         background: #FFFFFF;
         border: 1px solid {LINE};
@@ -187,6 +203,8 @@ st.markdown(
         line-height: 1.25;
     }}
     .kpi-note {{ font-size: 12px; color: {MUTED}; margin-top: 2px; }}
+
+    /* -------- PANELS & TEXT -------- */
     .panel {{
         background: #FFFFFF;
         border: 1px solid {LINE};
@@ -227,16 +245,37 @@ st.markdown(
         padding: 6px 8px;
         border-radius: 6px;
     }}
+
+    /* -------- TABS (force readable colours) -------- */
     .stTabs [data-baseweb="tab-list"] {{
         gap: 4px;
         border-bottom: 1px solid {LINE};
+        background: transparent;
     }}
     .stTabs [data-baseweb="tab"] {{
         font-weight: 600;
         padding: 10px 18px;
-        color: {MUTED};
+        background: transparent;
+        color: {MUTED} !important;
     }}
-    .stTabs [aria-selected="true"] {{ color: {BLUE}; }}
+    .stTabs [data-baseweb="tab"]:hover {{
+        color: {INK} !important;
+    }}
+    .stTabs [data-baseweb="tab"] p,
+    .stTabs [data-baseweb="tab"] span,
+    .stTabs [data-baseweb="tab"] div {{
+        color: inherit !important;
+    }}
+    .stTabs [aria-selected="true"] {{
+        color: {BLUE} !important;
+    }}
+    .stTabs [aria-selected="true"] p,
+    .stTabs [aria-selected="true"] span,
+    .stTabs [aria-selected="true"] div {{
+        color: {BLUE} !important;
+    }}
+
+    /* -------- EXPANDER -------- */
     div[data-testid="stExpander"] {{
         background: #FFFFFF;
         border: 1px solid {LINE};
@@ -260,43 +299,16 @@ def show_image(image, caption=None):
 
 def show_df(df, **kwargs):
     try:
-        st.dataframe(
-            df,
-            width="stretch",
-            hide_index=True,
-            **kwargs,
-        )
+        st.dataframe(df, width="stretch", hide_index=True, **kwargs)
     except TypeError:
-        st.dataframe(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            **kwargs,
-        )
-
-
-def show_chart(chart):
-    try:
-        st.altair_chart(chart, width="stretch")
-    except TypeError:
-        st.altair_chart(chart, use_container_width=True)
+        st.dataframe(df, use_container_width=True, hide_index=True, **kwargs)
 
 
 def primary_button(label, **kwargs):
     try:
-        return st.button(
-            label,
-            type="primary",
-            width="stretch",
-            **kwargs,
-        )
+        return st.button(label, type="primary", width="stretch", **kwargs)
     except TypeError:
-        return st.button(
-            label,
-            type="primary",
-            use_container_width=True,
-            **kwargs,
-        )
+        return st.button(label, type="primary", use_container_width=True, **kwargs)
 
 
 # ============================================================
@@ -305,6 +317,14 @@ def primary_button(label, **kwargs):
 
 def file_mtime(path):
     return os.path.getmtime(path) if os.path.exists(path) else 0
+
+
+def fmt_time(seconds):
+    """Format seconds as MM:SS.SS. Defined before any tab uses it."""
+    if pd.isna(seconds):
+        return "-"
+    minutes, secs = divmod(float(seconds), 60)
+    return f"{int(minutes):02d}:{secs:05.2f}"
 
 
 @st.cache_data(show_spinner=False)
@@ -316,17 +336,27 @@ def load_events(path, mtime):
 
     rows = []
     with open(path, "r", newline="", encoding="utf-8", errors="ignore") as file:
-        for i, row in enumerate(csv.DictReader(file), start=1):
+        reader = csv.DictReader(file)
+        for i, row in enumerate(reader, start=1):
+            no = pd.to_numeric(
+                row.get("Event Number") or row.get("No"), errors="coerce"
+            )
+            frame = pd.to_numeric(
+                row.get("Frame Number") or row.get("Frame"), errors="coerce"
+            )
+            ts = pd.to_numeric(
+                row.get("Timestamp (seconds)") or row.get("Time (s)"),
+                errors="coerce",
+            )
             snapshot = (row.get("Snapshot") or "").strip()
+
             rows.append({
-                "No": i,
+                "No": int(no) if pd.notna(no) else i,
                 "Event Type": (row.get("Event Type") or "").strip(),
                 "Object ID": (row.get("Object ID") or "").strip(),
-                "Frame": pd.to_numeric(row.get("Frame Number"), errors="coerce"),
-                "Time (s)": pd.to_numeric(
-                    row.get("Timestamp (seconds)"), errors="coerce"
-                ),
-                "Snapshot": snapshot if snapshot else f"event_{i:02d}.jpg",
+                "Frame": frame,
+                "Time (s)": ts,
+                "Snapshot": snapshot if snapshot else f"event_{i:04d}.jpg",
             })
 
     return pd.DataFrame(rows, columns=columns)
@@ -334,7 +364,8 @@ def load_events(path, mtime):
 
 @st.cache_data(show_spinner=False)
 def video_info(upload_folder, mtime):
-    info = {"name": None, "frames": None, "duration": None, "fps": None}
+    info = {"name": None, "frames": None, "duration": None, "fps": None,
+            "width": None, "height": None}
 
     if not os.path.isdir(upload_folder):
         return info
@@ -351,10 +382,11 @@ def video_info(upload_folder, mtime):
     info["name"] = os.path.basename(latest)
 
     try:
-        import cv2
         cap = cv2.VideoCapture(latest)
         frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         cap.release()
 
         if frames > 0 and fps and fps > 0:
@@ -362,11 +394,23 @@ def video_info(upload_folder, mtime):
                 frames=frames,
                 fps=round(fps, 2),
                 duration=round(frames / fps, 2),
+                width=width,
+                height=height,
             )
     except Exception:
         pass
 
     return info
+
+
+def load_metadata():
+    if not os.path.isfile(METADATA_FILE):
+        return None
+    try:
+        with open(METADATA_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def sha256_of(path):
@@ -386,39 +430,19 @@ def count_files(folder, extensions):
     )
 
 
-def count_event_clips():
-    """Count clips that correspond to events in the current event log only."""
-    if not os.path.isfile(EVENTS_FILE):
-        return 0
-    try:
-        with open(EVENTS_FILE, "r", newline="", encoding="utf-8", errors="ignore") as file:
-            current_event_count = sum(1 for _ in csv.DictReader(file))
-    except OSError:
-        return 0
-
-    return sum(
-        1 for number in range(1, current_event_count + 1)
-        if os.path.isfile(clip_path_for(number))
-    )
-
-
-def fmt_time(seconds):
-    if pd.isna(seconds):
-        return "-"
-    minutes, secs = divmod(float(seconds), 60)
-    return f"{int(minutes):02d}:{secs:05.2f}"
-
-
 def clip_path_for(no):
-    """Return a current browser-compatible clip, never an older converted copy."""
-    browser_clip = os.path.join(EVENTS_FOLDER, f"event_{no:02d}_browser.mp4")
-    original_clip = os.path.join(EVENTS_FOLDER, f"event_{no:02d}.mp4")
+    """Return the current clip for an event, converting to browser H.264 if needed."""
+    browser_clip = os.path.join(EVENTS_FOLDER, f"event_{no:04d}_browser.mp4")
+    original_clip = os.path.join(EVENTS_FOLDER, f"event_{no:04d}.mp4")
 
     if not os.path.isfile(original_clip):
-        return browser_clip
+        alt = os.path.join(EVENTS_FOLDER, f"event_{no:02d}.mp4")
+        if os.path.isfile(alt):
+            original_clip = alt
 
-    # Re-convert whenever the original clip is newer than its H.264 copy.
-    # This prevents a previous video's browser copy from being shown.
+    if not os.path.isfile(original_clip):
+        return browser_clip if os.path.isfile(browser_clip) else original_clip
+
     if (not os.path.isfile(browser_clip)
             or os.path.getmtime(browser_clip) < os.path.getmtime(original_clip)):
         try:
@@ -431,7 +455,6 @@ def clip_path_for(no):
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         except Exception:
-            # Fall back to the newly generated original if conversion is unavailable.
             return original_clip
 
     return browser_clip if os.path.isfile(browser_clip) else original_clip
@@ -485,7 +508,9 @@ def make_evidence_zip(df):
 
             clip = clip_path_for(int(row["No"]))
             if os.path.isfile(clip):
-                archive.write(clip, f"clips/event_{int(row['No']):02d}.mp4")
+                archive.write(
+                    clip, f"clips/event_{int(row['No']):04d}.mp4"
+                )
 
         if os.path.isfile(SUMMARY_VIDEO):
             archive.write(
@@ -493,11 +518,14 @@ def make_evidence_zip(df):
                 f"summary/{os.path.basename(SUMMARY_VIDEO)}",
             )
 
+        if os.path.isfile(METADATA_FILE):
+            archive.write(METADATA_FILE, "summaries/metadata.json")
+
     buffer.seek(0)
     return buffer.getvalue()
 
 
-def make_html_report(df, vinfo, case_id):
+def make_html_report(df, vinfo, case_id, meta=None):
     rows = ""
     for _, row in df.iterrows():
         frame = "" if pd.isna(row["Frame"]) else int(row["Frame"])
@@ -518,11 +546,12 @@ def make_html_report(df, vinfo, case_id):
             images += (
                 '<div class="ev">'
                 f'<img src="data:image/jpeg;base64,{encoded}"/>'
-                f"<p>Event {int(row['No']):02d} — Object {row['Object ID']} "
+                f"<p>Event {int(row['No']):02d} — Person {row['Object ID']} "
                 f"— {row['Time (s)']} s</p></div>"
             )
 
     csv_hash = sha256_of(EVENTS_FILE) if os.path.isfile(EVENTS_FILE) else "n/a"
+    video_hash = (meta or {}).get("video_sha256", "n/a")
     object_count = df["Object ID"].nunique() if not df.empty else 0
 
     return f"""<!DOCTYPE html>
@@ -552,11 +581,12 @@ code {{ background: #F1F5F9; padding: 2px 6px; border-radius: 4px; font-size: 12
 <li>Source video: {vinfo.get('name') or 'n/a'}</li>
 <li>Detection rule: person enters the predefined restricted area</li>
 <li>Detection method: YOLO + ByteTrack</li>
-<li>Events: {len(df)} · Tracked objects: {object_count}</li>
+<li>Events: {len(df)} · Tracked persons: {object_count}</li>
+<li>Source video SHA-256: <code>{video_hash}</code></li>
 <li>Event log SHA-256: <code>{csv_hash}</code></li>
 </ul>
 <h2>Event log</h2>
-<table><tr><th>#</th><th>Event</th><th>Object</th><th>Frame</th><th>Time (s)</th></tr>
+<table><tr><th>#</th><th>Event</th><th>Person</th><th>Frame</th><th>Time (s)</th></tr>
 {rows}
 </table>
 <h2>Evidence snapshots</h2>
@@ -571,10 +601,18 @@ code {{ background: #F1F5F9; padding: 2px 6px; border-radius: 4px; font-size: 12
 
 all_events = load_events(EVENTS_FILE, file_mtime(EVENTS_FILE))
 vinfo = video_info(UPLOAD_FOLDER, file_mtime(UPLOAD_FOLDER))
+metadata = load_metadata()
 has_data = not all_events.empty
 
 n_snapshots = count_files(SNAPSHOT_FOLDER, (".jpg", ".jpeg", ".png"))
-n_clips = count_event_clips()
+n_clips = sum(
+    1 for no in all_events["No"].tolist()
+    if os.path.isfile(
+        os.path.join(EVENTS_FOLDER, f"event_{int(no):04d}.mp4")
+    ) or os.path.isfile(
+        os.path.join(EVENTS_FOLDER, f"event_{int(no):02d}.mp4")
+    )
+) if has_data else 0
 
 case_id = (
     datetime.fromtimestamp(file_mtime(EVENTS_FILE)).strftime("CASE-%Y%m%d-%H%M")
@@ -603,22 +641,29 @@ with st.sidebar:
     st.markdown("**Analysis status**")
 
     if has_data:
-        st.markdown('<span class="pill pill-green">Analysis complete</span>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            '<span class="pill pill-green">Analysis complete</span>',
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown('<span class="pill pill-amber">Awaiting video</span>',
-                    unsafe_allow_html=True)
+        st.markdown(
+            '<span class="pill pill-amber">Awaiting video</span>',
+            unsafe_allow_html=True,
+        )
+
+    unique_persons = (
+        int(metadata.get("unique_tracked_ids", 0))
+        if metadata else (all_events["Object ID"].nunique() if has_data else 0)
+    )
 
     st.markdown(
         f"""
         <div style="margin-top:10px">
             <div class="side-row"><span>Case ID</span><span>{case_id}</span></div>
             <div class="side-row"><span>Events logged</span><span>{len(all_events)}</span></div>
+            <div class="side-row"><span>Unique persons</span><span>{unique_persons}</span></div>
             <div class="side-row"><span>Snapshots</span><span>{n_snapshots}</span></div>
             <div class="side-row"><span>Event clips</span><span>{n_clips}</span></div>
-            <div class="side-row"><span>Summary video</span>
-                <span>{"Ready" if os.path.isfile(SUMMARY_VIDEO) else "Pending"}</span>
-            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -636,9 +681,9 @@ with st.sidebar:
             key=lambda x: (len(str(x)), str(x)),
         )
         sel_objects = st.multiselect(
-            "Object ID",
+            "Person ID",
             object_options,
-            placeholder="All objects",
+            placeholder="All persons",
         )
 
         t_min = float(all_events["Time (s)"].min())
@@ -701,7 +746,22 @@ st.markdown(
 # UPLOAD & ANALYSIS
 # ============================================================
 
-with st.expander("Upload new CCTV video", expanded=not has_data):
+session_key_roi = "roi_default"
+
+if has_data:
+    st.info(
+        "ℹ️ **A previous analysis is loaded.** "
+        "Expand **➕ Analyse a new video** below to upload a different clip. "
+        "Starting a new run replaces the current evidence automatically."
+    )
+
+expander_title = (
+    "➕ Analyse a new video"
+    if has_data
+    else "➕ Analyse a new video (start here)"
+)
+
+with st.expander(expander_title, expanded=not has_data):
     left, right = st.columns([1, 1])
 
     with left:
@@ -721,45 +781,176 @@ with st.expander("Upload new CCTV video", expanded=not has_data):
         else:
             st.caption("Choose a video to preview it here before analysis.")
 
-    if uploaded_video is not None and primary_button("Start forensic analysis"):
+    if uploaded_video is not None:
+        st.markdown("**Restricted area (rectangular ROI)**")
+        st.caption(
+            "Enter pixel coordinates from the top-left of the frame. "
+            "The red box is drawn at the moment each event fires."
+        )
+
+        tmp_bytes = uploaded_video.getvalue()
+        tmp_path = os.path.join(UPLOAD_FOLDER, uploaded_video.name)
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-        video_path = os.path.join(UPLOAD_FOLDER, os.path.basename(uploaded_video.name))
+        if not os.path.isfile(tmp_path):
+            with open(tmp_path, "wb") as file:
+                file.write(tmp_bytes)
 
-        with open(video_path, "wb") as file:
-            file.write(uploaded_video.getbuffer())
+        probe = cv2.VideoCapture(tmp_path)
+        vw = int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1920
+        vh = int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1080
+        probe.release()
 
-        with st.status("Running forensic analysis…", expanded=True) as status:
-            st.write("Video saved to evidence store.")
-            st.write("Detecting and tracking objects. This can take several minutes.")
+        defaults = st.session_state.get(session_key_roi) or {
+            "x": min(270, vw - 1),
+            "y": min(390, vh - 1),
+            "w": min(540, vw),
+            "h": min(460, vh),
+        }
 
+        r1, r2, r3, r4 = st.columns(4)
+        with r1:
+            roi_x = st.number_input("X", 0, vw - 1,
+                                    min(int(defaults["x"]), vw - 1), step=10)
+        with r2:
+            roi_y = st.number_input("Y", 0, vh - 1,
+                                    min(int(defaults["y"]), vh - 1), step=10)
+        with r3:
+            roi_w = st.number_input("Width", 1, vw,
+                                    min(int(defaults["w"]), vw), step=10)
+        with r4:
+            roi_h = st.number_input("Height", 1, vh,
+                                    min(int(defaults["h"]), vh), step=10)
+
+        roi_valid = (roi_x + roi_w <= vw) and (roi_y + roi_h <= vh)
+
+        if roi_valid:
+            cap = cv2.VideoCapture(tmp_path)
+            ok, frame = cap.read()
+            cap.release()
+            if ok:
+                cv2.rectangle(frame, (int(roi_x), int(roi_y)),
+                              (int(roi_x + roi_w), int(roi_y + roi_h)),
+                              (0, 0, 255), 3)
+                cv2.putText(frame, "RESTRICTED AREA",
+                            (int(roi_x), max(25, int(roi_y) - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                            (0, 0, 255), 2)
+                show_image(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    caption=f"Red rectangle = restricted area · "
+                            f"video {vw}×{vh}",
+                )
+        else:
+            st.error("The ROI extends outside the video frame.")
+
+        if roi_valid and primary_button("Start forensic analysis"):
+            video_path = os.path.join(
+                UPLOAD_FOLDER, os.path.basename(uploaded_video.name)
+            )
+            with open(video_path, "wb") as file:
+                file.write(uploaded_video.getbuffer())
+
+            st.session_state[session_key_roi] = {
+                "x": int(roi_x), "y": int(roi_y),
+                "w": int(roi_w), "h": int(roi_h),
+            }
+
+            progress_bar = st.progress(0, text="Starting analysis…")
+            log_box = st.empty()
+            log_lines = []
+
+            command = [
+                sys.executable,
+                "-u",
+                PROCESS_SCRIPT,
+                video_path,
+                str(int(roi_x)), str(int(roi_y)),
+                str(int(roi_w)), str(int(roi_h)),
+            ]
+
+            returncode = -1
             try:
-                result = subprocess.run(
-                    [sys.executable, PROCESS_SCRIPT, video_path],
-                    capture_output=True,
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     cwd=BASE_DIR,
+                    bufsize=1,
                 )
 
-                if result.returncode == 0:
-                    status.update(label="Analysis complete", state="complete")
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    status.update(label="Analysis failed", state="error")
-                    if result.stdout:
-                        st.code(result.stdout)
-                    if result.stderr:
-                        st.code(result.stderr)
+                for line in process.stdout:
+                    line = line.rstrip()
+                    if not line:
+                        continue
+
+                    if line.startswith("Progress:"):
+                        try:
+                            head = line.split("Progress:")[1].split("(")[0].strip()
+                            done_str, total_str = head.split("/")
+                            done = int(done_str.strip())
+                            total = int(total_str.strip().split()[0])
+                            fraction = min(1.0, done / max(1, total))
+                            progress_bar.progress(
+                                fraction,
+                                text=f"Analysing… {done}/{total} samples "
+                                     f"({fraction*100:.0f}%)",
+                            )
+                        except (ValueError, IndexError):
+                            pass
+                        continue
+
+                    log_lines.append(line)
+                    log_box.code("\n".join(log_lines[-15:]), language=None)
+
+                process.wait()
+                returncode = process.returncode
+
             except Exception as error:
-                status.update(label="Analysis failed", state="error")
-                st.exception(error)
+                progress_bar.empty()
+                st.error(f"Could not run processing: {error}")
+                returncode = -1
+
+            if returncode == 0:
+                progress_bar.progress(1.0, text="Analysis complete")
+                st.success("Forensic analysis complete. Refreshing dashboard…")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                progress_bar.empty()
+                st.error("Video processing failed. See log above.")
+                st.stop()
+
+    if has_data:
+        st.divider()
+        st.caption(
+            "Or clear the currently loaded evidence without uploading a new "
+            "video. Source files in `data/uploads/` are preserved."
+        )
+        if st.button("🗑 Clear current evidence"):
+            try:
+                if os.path.isfile(EVENTS_FILE):
+                    os.remove(EVENTS_FILE)
+                for folder in (SNAPSHOT_FOLDER, EVENTS_FOLDER, SUMMARY_FOLDER):
+                    if os.path.isdir(folder):
+                        shutil.rmtree(folder)
+                st.cache_data.clear()
+                st.success("Evidence cleared.")
+                st.rerun()
+            except OSError as error:
+                st.error(f"Could not clear evidence: {error}")
 
 # ============================================================
 # EMPTY STATE
 # ============================================================
 
 if not has_data:
-    st.info("No analysis results yet. Upload a CCTV video and select **Start forensic analysis**.")
+    st.info(
+        "No analysis results yet. Upload a CCTV video, set the "
+        "restricted area and select **Start forensic analysis**."
+    )
     st.stop()
 
 if events.empty:
@@ -771,20 +962,34 @@ if events.empty:
 # ============================================================
 
 total_events = len(events)
-tracked = events["Object ID"].nunique()
+unique_persons = (
+    int(metadata.get("unique_tracked_ids", 0)) if metadata
+    else events["Object ID"].nunique()
+)
 
 bins = (events["Time (s)"] // 10 * 10).astype(int)
 peak_bin = bins.value_counts().idxmax()
 peak_count = int(bins.value_counts().max())
 
-duration = vinfo["duration"] if vinfo["duration"] else float(all_events["Time (s)"].max())
-frames = vinfo["frames"] if vinfo["frames"] else int(all_events["Frame"].max())
+duration = (
+    vinfo["duration"] if vinfo["duration"]
+    else float(all_events["Time (s)"].max())
+)
+frames = (
+    vinfo["frames"] if vinfo["frames"]
+    else int(all_events["Frame"].max())
+)
 duration_note = "from video metadata" if vinfo["duration"] else "estimated from last event"
 frames_note = f"{vinfo['fps']} fps" if vinfo["fps"] else "estimated from last event"
 
 coverage = (
     round(min(n_snapshots, len(all_events)) / len(all_events) * 100)
     if len(all_events) else 0
+)
+
+processing_time = (
+    f"{metadata.get('processing_seconds', 0):.1f}s"
+    if metadata and "processing_seconds" in metadata else "—"
 )
 
 
@@ -798,14 +1003,16 @@ def kpi(label, value, note="", tone=""):
     """
 
 
-k1, k2, k3, k4, k5 = st.columns(5)
+k1, k2, k3, k4, k5, k6 = st.columns(6)
 
 with k1:
     st.markdown(kpi("Restricted-area events", total_events,
-                     "filtered view" if filtered else "all detections", "red"),
+                     "filtered view" if filtered else "all detections",
+                     "red"),
                 unsafe_allow_html=True)
 with k2:
-    st.markdown(kpi("Tracked objects", tracked, "unique Object IDs"),
+    st.markdown(kpi("Unique persons", unique_persons,
+                     "distinct tracked IDs"),
                 unsafe_allow_html=True)
 with k3:
     st.markdown(kpi("Video duration", f"{duration:,.1f}s", duration_note),
@@ -818,6 +1025,10 @@ with k5:
                      f"{n_snapshots} snapshots · {n_clips} clips",
                      "green" if coverage == 100 else "amber"),
                 unsafe_allow_html=True)
+with k6:
+    st.markdown(kpi("Processing time", processing_time,
+                     "from metadata.json"),
+                unsafe_allow_html=True)
 
 st.write("")
 
@@ -828,7 +1039,7 @@ st.write("")
 tab_overview, tab_log, tab_objects, tab_evidence, tab_clips, tab_files = st.tabs([
     "Overview",
     "Event log",
-    "Object analysis",
+    "Person analysis",
     "Evidence gallery",
     "Event clips",
     "Reports & export",
@@ -851,22 +1062,16 @@ with tab_overview:
             value=5,
         )
 
-        histogram = (
-            alt.Chart(events)
-            .mark_bar(color=BLUE, cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
-            .encode(
-                x=alt.X("Time (s):Q", bin=alt.Bin(step=bin_size),
-                        title="Video time (seconds)"),
-                y=alt.Y("count():Q", title="Events"),
-                tooltip=[
-                    alt.Tooltip("count():Q", title="Events"),
-                    alt.Tooltip("Time (s):Q", bin=alt.Bin(step=bin_size),
-                                title="Window"),
-                ],
+        binned = (
+            events.assign(
+                window=(events["Time (s)"] // bin_size * bin_size).astype(int)
             )
-            .properties(height=300)
+            .groupby("window")
+            .size()
+            .reset_index(name="Events")
+            .set_index("window")
         )
-        show_chart(histogram)
+        st.bar_chart(binned, height=300, color=BLUE)
 
     with c2:
         st.markdown('<div class="panel-title">Key findings</div>',
@@ -880,12 +1085,12 @@ with tab_overview:
         st.markdown(
             f"""
             <div class="insight"><b>{total_events}</b> restricted-area events involving
-                <b>{tracked}</b> tracked object(s).</div>
+                <b>{unique_persons}</b> tracked person(s).</div>
             <div class="insight">First event at <b>{fmt_time(first_timestamp)}</b>,
                 last at <b>{fmt_time(last_timestamp)}</b>.</div>
             <div class="insight">Peak activity: <b>{peak_count}</b> event(s) between
                 <b>{peak_bin}s</b> and <b>{peak_bin + 10}s</b>.</div>
-            <div class="insight">Most active object: <b>ID {top_object}</b>
+            <div class="insight">Most active person: <b>ID {top_object}</b>
                 with <b>{top_object_count}</b> event(s).</div>
             """,
             unsafe_allow_html=True,
@@ -902,26 +1107,24 @@ with tab_overview:
             unsafe_allow_html=True,
         )
         st.write("")
-        st.markdown("- **Detector:** YOLO\n- **Tracker:** ByteTrack\n- **Log fields:** timestamp, object ID, frame")
+        st.markdown(
+            "- **Detector:** YOLO11n\n"
+            "- **Tracker:** ByteTrack\n"
+            "- **Log fields:** timestamp, person ID, frame"
+        )
 
     with c4:
-        st.markdown('<div class="panel-title">Events per object</div>',
+        st.markdown('<div class="panel-title">Events per person</div>',
                     unsafe_allow_html=True)
-        per_object = events["Object ID"].value_counts().reset_index()
-        per_object.columns = ["Object ID", "Events"]
-
-        bar_chart = (
-            alt.Chart(per_object.head(15))
-            .mark_bar(color=NAVY_2, cornerRadiusTopRight=3,
-                      cornerRadiusBottomRight=3)
-            .encode(
-                y=alt.Y("Object ID:N", sort="-x", title="Object ID"),
-                x=alt.X("Events:Q", title="Events"),
-                tooltip=["Object ID", "Events"],
-            )
-            .properties(height=max(120, 28 * min(len(per_object), 15)))
+        per_object = (
+            events["Object ID"].value_counts()
+            .reset_index()
+            .rename(columns={"index": "Object ID", "Object ID": "Events"})
         )
-        show_chart(bar_chart)
+        per_object.columns = ["Object ID", "Events"]
+        per_object = per_object.head(15).set_index("Object ID")
+        st.bar_chart(per_object, height=max(140, 28 * len(per_object)),
+                     color=NAVY_2)
 
 # ============================================================
 # EVENT LOG
@@ -931,7 +1134,9 @@ with tab_log:
     st.markdown('<div class="panel-title">Forensic event log</div>',
                 unsafe_allow_html=True)
 
-    search = st.text_input("Search log", placeholder="Search by event type or object ID")
+    search = st.text_input(
+        "Search log", placeholder="Search by event type or person ID"
+    )
     view = events.copy()
 
     if search:
@@ -943,16 +1148,26 @@ with tab_log:
 
     view["Timecode"] = view["Time (s)"].apply(fmt_time)
     view["Clip"] = view["No"].apply(
-        lambda number: "Yes" if os.path.isfile(clip_path_for(int(number))) else "Missing"
+        lambda number: "Yes"
+        if os.path.isfile(clip_path_for(int(number)))
+        else "Missing"
     )
     view["Snapshot file"] = view["Snapshot"].apply(
-        lambda name: "Yes" if os.path.isfile(snapshot_path_for(name)) else "Missing"
+        lambda name: "Yes"
+        if os.path.isfile(snapshot_path_for(name))
+        else "Missing"
     )
 
     display = view[[
         "No", "Timecode", "Time (s)", "Event Type", "Object ID",
         "Frame", "Snapshot file", "Clip",
-    ]]
+    ]].rename(columns={
+        "No": "Event",
+        "Timecode": "Timecode",
+        "Time (s)": "Time (s)",
+        "Object ID": "Person ID",
+        "Frame": "Frame",
+    })
 
     show_df(display)
     st.caption(f"{len(display)} of {len(all_events)} events shown")
@@ -965,40 +1180,43 @@ with tab_log:
     )
 
 # ============================================================
-# OBJECT ANALYSIS
+# PERSON ANALYSIS
 # ============================================================
 
 with tab_objects:
-    st.markdown('<div class="panel-title">Tracked object summary</div>',
+    st.markdown('<div class="panel-title">Tracked person summary</div>',
                 unsafe_allow_html=True)
 
     object_table = build_object_table(events)
     if not object_table.empty:
         object_table["Risk"] = object_table["Events"].apply(risk_level)
+        object_table = object_table.rename(columns={"Object ID": "Person ID"})
         show_df(object_table)
 
         st.caption(
-            "Risk is a simple heuristic based on event count per object "
+            "Risk is a simple heuristic based on event count per person "
             "(High ≥ 10, Medium ≥ 4). It is a triage aid, not a finding."
         )
 
         st.write("")
-        st.markdown('<div class="panel-title">Object timeline</div>',
+        st.markdown('<div class="panel-title">Person timeline</div>',
                     unsafe_allow_html=True)
 
-        timeline = (
-            alt.Chart(events)
-            .mark_circle(size=110, color=RED, opacity=0.8)
-            .encode(
-                x=alt.X("Time (s):Q", title="Video time (seconds)"),
-                y=alt.Y("Object ID:N", title="Object ID"),
-                tooltip=["No", "Object ID", "Time (s)", "Frame", "Event Type"],
-            )
-            .properties(height=max(160, 34 * tracked))
+        timeline_df = (
+            events[["Object ID", "Time (s)"]]
+            .rename(columns={"Object ID": "Person", "Time (s)": "Time"})
+            .astype({"Person": str})
+            .sort_values("Time")
         )
-        show_chart(timeline)
+        st.scatter_chart(
+            timeline_df,
+            x="Time",
+            y="Person",
+            height=max(180, 34 * events["Object ID"].nunique()),
+            color=RED,
+        )
     else:
-        st.info("No object information is available.")
+        st.info("No person information is available.")
 
 # ============================================================
 # EVIDENCE GALLERY
@@ -1014,7 +1232,8 @@ with tab_evidence:
     page_col, info_col = st.columns([1, 4])
 
     with page_col:
-        page = st.number_input("Page", min_value=1, max_value=pages, value=1, step=1)
+        page = st.number_input("Page", min_value=1, max_value=pages,
+                               value=1, step=1)
 
     with info_col:
         st.write("")
@@ -1028,7 +1247,8 @@ with tab_evidence:
             snapshot = snapshot_path_for(row["Snapshot"])
             st.markdown(
                 f"**Event {int(row['No']):02d}** &nbsp; "
-                f'<span class="pill pill-blue">Object {row["Object ID"]}</span> &nbsp;'
+                f'<span class="pill pill-blue">Person {row["Object ID"]}</span>'
+                f' &nbsp;'
                 f'<span class="pill pill-grey">{fmt_time(row["Time (s)"])}</span>',
                 unsafe_allow_html=True,
             )
@@ -1053,7 +1273,7 @@ with tab_clips:
 
     labels = {
         int(row["No"]): (
-            f"Event {int(row['No']):02d} · Object {row['Object ID']} · "
+            f"Event {int(row['No']):02d} · Person {row['Object ID']} · "
             f"{fmt_time(row['Time (s)'])}"
         )
         for _, row in events.iterrows()
@@ -1072,7 +1292,6 @@ with tab_clips:
     with video_col:
         if os.path.isfile(clip):
             st.video(clip)
-
             if clip.lower().endswith("_browser.mp4"):
                 st.caption("Playing browser-compatible H.264 evidence video.")
 
@@ -1092,9 +1311,11 @@ with tab_clips:
             <div class="panel">
                 <div class="panel-title">Event details</div>
                 <p><b>Event type:</b> {row['Event Type']}</p>
-                <p><b>Object ID:</b> {row['Object ID']}</p>
-                <p><b>Frame:</b> {'' if pd.isna(row['Frame']) else int(row['Frame'])}</p>
-                <p><b>Timestamp:</b> {row['Time (s)']} s ({fmt_time(row['Time (s)'])})</p>
+                <p><b>Person ID:</b> {row['Object ID']}</p>
+                <p><b>Frame:</b>
+                    {'' if pd.isna(row['Frame']) else int(row['Frame'])}</p>
+                <p><b>Timestamp:</b> {row['Time (s)']} s
+                    ({fmt_time(row['Time (s)'])})</p>
                 <p><b>Snapshot:</b> {row['Snapshot']}</p>
             </div>
             """,
@@ -1109,16 +1330,25 @@ with tab_files:
     report_col, export_col = st.columns([3, 2])
 
     with report_col:
-        st.markdown('<div class="panel-title">Annotated forensic summary</div>',
+        st.markdown('<div class="panel-title">Automated HTML summary</div>',
                     unsafe_allow_html=True)
 
-        # SUMMARY_VIDEO prefers the H.264 browser copy.
+        if os.path.isfile(SUMMARY_HTML):
+            with open(SUMMARY_HTML, "rb") as file:
+                st.download_button(
+                    "Download HTML event summary",
+                    data=file.read(),
+                    file_name="cctv_forensic_summary.html",
+                    mime="text/html",
+                )
+        else:
+            st.info("The HTML summary has not been generated yet.")
+
         if os.path.isfile(SUMMARY_VIDEO):
+            st.markdown("**Annotated summary video**")
             st.video(SUMMARY_VIDEO)
             if SUMMARY_VIDEO == SUMMARY_VIDEO_BROWSER:
                 st.caption("Playing browser-compatible H.264 summary video.")
-        else:
-            st.info("The annotated summary video has not been generated yet.")
 
         st.write("")
         st.markdown('<div class="panel-title">Chain of custody</div>',
@@ -1135,13 +1365,12 @@ with tab_files:
                 unsafe_allow_html=True,
             )
 
-        if os.path.isfile(SUMMARY_VIDEO):
-            if st.checkbox("Compute summary video hash (may take a moment)"):
-                st.markdown(f"**{os.path.basename(SUMMARY_VIDEO)}**")
-                st.markdown(
-                    f'<div class="hash">{sha256_of(SUMMARY_VIDEO)}</div>',
-                    unsafe_allow_html=True,
-                )
+        if metadata and metadata.get("video_sha256"):
+            st.markdown("**source video**")
+            st.markdown(
+                f'<div class="hash">{metadata["video_sha256"]}</div>',
+                unsafe_allow_html=True,
+            )
 
     with export_col:
         st.markdown('<div class="panel-title">Export</div>',
@@ -1159,7 +1388,7 @@ with tab_files:
             st.warning("Event log file not found.")
 
         st.write("")
-        report_html = make_html_report(events, vinfo, case_id)
+        report_html = make_html_report(events, vinfo, case_id, metadata)
 
         st.download_button(
             "Download investigation report (HTML)",

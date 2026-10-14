@@ -1,22 +1,29 @@
-# Python environment
+# Virtual environment
 venv/
+.venv/
+env/
+
+# Streamlit secrets (but keep config.toml)
+.streamlit/secrets.toml
+
+# Generated evidence — regenerated on every run
+outputs/
+data/events.csv
+data/events_backup.csv
+data/roi.txt
+
+# Python cache
 __pycache__/
 *.pyc
 
-# Secrets
-.env
+# OS junk
+.DS_Store
+Thumbs.db
 
-# Input videos
-videos/*
-!videos/.gitkeep
+# Evidence archive
+cctv_evidence_export.zip
+*.zip
 
-# Uploaded videos
+# Uploaded test videos — user-specific, don't push
 data/uploads/*
 !data/uploads/.gitkeep
-
-# Generated evidence and reports
-outputs/*
-!outputs/.gitkeep
-
-# Temporary model runs
-runs/
