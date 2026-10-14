@@ -228,6 +228,23 @@ Click **Start forensic analysis**.
 
 The application processes the video and displays progress and processing logs.
 
+## Test Videos
+
+Download the sample videos below for testing the CCTV forensic analysis system.
+
+1. [Download Test Video 1](https://YOUR-DIRECT-VIDEO-URL-1)
+2. [Download Test Video 2](https://YOUR-DIRECT-VIDEO-URL-2)
+3. [Download Test Video 3](https://YOUR-DIRECT-VIDEO-URL-3)
+
+### How to Test
+
+1. Download a video.
+2. Open the application using `streamlit run src/app.py`.
+3. Upload the video and configure the restricted area (ROI).
+4. Start analysis and review the detected events, snapshots, clips, and reports.
+
+
+
 ### 6. Review the results
 
 After processing, inspect the dashboard to review detected events, person tracking summaries, snapshots, video clips, and generated reports.
