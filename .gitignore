@@ -27,3 +27,4 @@ cctv_evidence_export.zip
 # Uploaded test videos — user-specific, don't push
 data/uploads/*
 !data/uploads/.gitkeep
+
