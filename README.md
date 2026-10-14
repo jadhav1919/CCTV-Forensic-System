@@ -230,11 +230,13 @@ The application processes the video and displays progress and processing logs.
 
 ## Test Videos
 
-Download the sample videos below for testing the CCTV forensic analysis system.
+Download the sample videos below to test the CCTV forensic analysis system.
 
-1. [Download Test Video 1](https://YOUR-DIRECT-VIDEO-URL-1)
-2. [Download Test Video 2](https://YOUR-DIRECT-VIDEO-URL-2)
-3. [Download Test Video 3](https://YOUR-DIRECT-VIDEO-URL-3)
+1. [Download Test Video 1](https://github.com/jadhav1919/CCTV-Forensic-System/raw/refs/heads/main/test_videos/1044-142621375_medium.mp4)
+2. [Download Test Video 2](https://github.com/jadhav1919/CCTV-Forensic-System/raw/refs/heads/main/test_videos/22516-328624717_medium.mp4)
+3. [Download Test Video 3](https://github.com/jadhav1919/CCTV-Forensic-System/raw/refs/heads/main/test_videos/33569-397143928_medium.mp4)
+
+
 
 ### How to Test
 
